@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - 跳转中</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="title">正在进入应用</div>
+      <div class="sub">请稍候，系统正在为你签发访问令牌并返回目标应用。</div>
+      <div id="flash" class="flash" style="display:block">处理中...</div>
+    </section>
+  </main>
+  <script>
+    const flash = document.getElementById('flash');
+    const params = new URLSearchParams(location.search);
+    const appSlug = (params.get('app_slug') || '').trim();
+    const returnTo = (params.get('return_to') || '').trim();
+    const sessionKey = 'invite_center_session';
+
+    function show(text, error = false) {
+      flash.textContent = text;
+      flash.className = `flash${error ? ' error' : ''}`;
+      flash.style.display = 'block';
+    }
+
+    function preserveQuery(path) {
+      const next = new URL(path, location.origin);
+      if (appSlug) next.searchParams.set('app_slug', appSlug);
+      if (returnTo) next.searchParams.set('return_to', returnTo);
+      return `${next.pathname}${next.search}${next.hash}`;
+    }
+
+    function resolveReturnUrl(accessToken, claims) {
+      const target = returnTo || claims?.callback_url || '';
+      if (!target) return '/admin';
+      const url = new URL(target, location.origin);
+      url.searchParams.set('access_token', accessToken);
+      return url.toString();
+    }
+
+    async function start() {
+      const sessionToken = localStorage.getItem(sessionKey) || '';
+      if (!sessionToken) {
+        location.href = preserveQuery('/login');
+        return;
+      }
+      if (!appSlug) {
+        location.href = '/admin';
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/access-token', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ app_slug: appSlug }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || data.error || '签发 access token 失败');
+        location.href = resolveReturnUrl(data.token || '', data.claims || {});
+      } catch (err) {
+        localStorage.removeItem(sessionKey);
+        show(err.message || '跳转失败，请重新登录', true);
+        setTimeout(() => {
+          location.href = preserveQuery('/login');
+        }, 1200);
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>

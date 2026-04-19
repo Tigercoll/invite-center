@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - 申请开通</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="title">申请开通</div>
+      <div class="sub">先提交邮箱申请，管理员审核通过后，会向该邮箱发送注册链接或开通通知。</div>
+      <div id="flash" class="flash"></div>
+      <div class="grid">
+        <div class="row">
+          <label>应用</label>
+          <input id="appName" disabled placeholder="加载中..." />
+        </div>
+        <div class="row">
+          <label>邮箱</label>
+          <input id="email" type="email" placeholder="you@example.com" />
+        </div>
+        <button id="submitBtn">提交申请</button>
+      </div>
+      <div class="sub" style="margin-top:14px">
+        <a class="link" id="loginLink" href="/login">已有账号，前往登录</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const appSlug = (params.get('app_slug') || '').trim();
+    const returnTo = (params.get('return_to') || '').trim();
+    const flash = document.getElementById('flash');
+
+    function show(text, error = false) {
+      flash.textContent = text;
+      flash.className = `flash${error ? ' error' : ''}`;
+      flash.style.display = 'block';
+    }
+
+    function withContext(path) {
+      const url = new URL(path, location.origin);
+      if (appSlug) url.searchParams.set('app_slug', appSlug);
+      if (returnTo) url.searchParams.set('return_to', returnTo);
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+
+    async function loadApp() {
+      if (!appSlug) throw new Error('缺少 app_slug');
+      const res = await fetch(`/api/auth/app?slug=${encodeURIComponent(appSlug)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || '应用不存在');
+      document.getElementById('appName').value = `${data.app.name} (${data.app.slug})`;
+    }
+
+    async function submit() {
+      try {
+        const res = await fetch('/api/auth/applications', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            app_slug: appSlug,
+            email: document.getElementById('email').value.trim(),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || data.error || '提交失败');
+        show('申请已提交，请等待管理员审核邮件。');
+      } catch (err) {
+        show(err.message || '提交失败', true);
+      }
+    }
+
+    document.getElementById('loginLink').href = withContext('/login');
+    document.getElementById('submitBtn').onclick = submit;
+
+    loadApp().catch((err) => show(err.message || '加载失败', true));
+  </script>
+</body>
+</html>

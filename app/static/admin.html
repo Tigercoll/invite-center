@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - Admin</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <div class="topbar">
+      <div>
+        <div class="title" style="font-size:26px">Invite Center</div>
+        <div class="sub" style="margin:0">统一申请 / 审核 / 注册 / 登录 / 找回密码中心，可服务多个项目。</div>
+      </div>
+      <div class="actions">
+        <button class="alt" id="logoutBtn">退出登录</button>
+      </div>
+    </div>
+    <div id="flash" class="flash"></div>
+    <div class="two-col">
+      <section class="card">
+        <div class="row">
+          <label>管理员账号</label>
+          <div id="adminInfo" class="muted">检查登录状态中...</div>
+        </div>
+        <div class="row">
+          <label>新增应用</label>
+          <input id="appSlug" placeholder="grok2api" />
+          <input id="appName" placeholder="Grok2API" />
+          <input id="callbackUrl" placeholder="https://app.example.com/webui/login (可选)" />
+          <button id="createAppBtn">创建应用</button>
+        </div>
+        <div class="row">
+          <label>管理员直邀（保留旧流程）</label>
+          <select id="inviteApp"></select>
+          <input id="inviteEmail" placeholder="user@example.com" />
+          <input id="inviteRole" placeholder="member" value="member" />
+          <input id="inviteTarget" placeholder="chat / masonry / dashboard" />
+          <textarea id="inviteMetadata" placeholder='{"webui":"chat"}'></textarea>
+          <input id="inviteNote" placeholder="note" />
+          <button id="createInviteBtn">创建邀请并发邮件</button>
+        </div>
+      </section>
+      <section class="card">
+        <div class="row">
+          <label>当前登录用户</label>
+          <div id="sessionInfo" class="muted">未登录</div>
+        </div>
+        <div class="row">
+          <label>签发应用访问令牌</label>
+          <select id="tokenApp"></select>
+          <button id="issueTokenBtn">生成 access token</button>
+          <textarea id="issuedToken" placeholder="生成结果会显示在这里"></textarea>
+        </div>
+        <div class="row">
+          <label>审核说明</label>
+          <div class="muted">用户先在 /apply?app_slug=... 提交申请；管理员在本页审核；通过后自动发注册链接或开通通知。</div>
+        </div>
+      </section>
+    </div>
+    <section class="card section">
+      <div class="actions" style="justify-content:space-between">
+        <div>
+          <div class="title" style="font-size:20px">申请列表</div>
+          <div class="muted">点击“通过”即可直接审批；系统默认使用 member / 空 target / 空 metadata。已有账号会直接开通应用权限。</div>
+        </div>
+        <button class="alt" id="refreshBtn">刷新全部</button>
+      </div>
+      <table class="table" id="applicationsTable"></table>
+    </section>
+    <section class="card section">
+      <div class="title" style="font-size:20px">应用列表</div>
+      <table class="table" id="appsTable"></table>
+    </section>
+    <section class="card section">
+      <div class="title" style="font-size:20px">邀请列表（旧流程）</div>
+      <table class="table" id="invitesTable"></table>
+    </section>
+    <section class="card section">
+      <div class="title" style="font-size:20px">用户列表</div>
+      <table class="table" id="usersTable"></table>
+    </section>
+  </main>
+  <script>
+    const flash = document.getElementById('flash');
+    const sessionStorageKey = 'invite_center_session';
+
+    const show = (text, error = false) => {
+      flash.textContent = text;
+      flash.className = `flash${error ? ' error' : ''}`;
+      flash.style.display = 'block';
+    };
+    const sessionToken = () => localStorage.getItem(sessionStorageKey) || '';
+    const jsonHeaders = (extra={}) => ({'Content-Type':'application/json', ...extra});
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+    function goLogin() {
+      location.href = '/login?next=%2Fadmin';
+    }
+
+    async function authGet(path){
+      const res = await fetch(path, {headers:{Authorization:`Bearer ${sessionToken()}`}});
+      return {res, data: await res.json().catch(()=>({}))};
+    }
+
+    async function adminFetch(path, options={}){
+      const res = await fetch(path, {
+        ...options,
+        headers:{Authorization:`Bearer ${sessionToken()}`, ...(options.headers||{})}
+      });
+      const data = await res.json().catch(()=>({}));
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(data.detail || '请先使用管理员账号登录');
+      }
+      if (!res.ok) throw new Error(data.detail || data.error || '请求失败');
+      return data;
+    }
+
+    async function ensureAdmin(){
+      const token = sessionToken();
+      if (!token) {
+        goLogin();
+        return false;
+      }
+      const {res, data} = await authGet('/api/admin/me');
+      if (!res.ok || !data?.is_admin) {
+        localStorage.removeItem(sessionStorageKey);
+        show(data?.detail || '当前账号不是管理员，请先登录管理员账号', true);
+        setTimeout(goLogin, 800);
+        return false;
+      }
+      document.getElementById('adminInfo').textContent = `${data.email}（管理员）`;
+      document.getElementById('sessionInfo').textContent = `${data.email} · ${data.apps.map(x => x.slug).join(', ') || '无应用'}`;
+      const options = data.apps.map(item => `<option value="${esc(item.slug)}">${esc(item.name)} (${esc(item.slug)})</option>`).join('');
+      document.getElementById('tokenApp').innerHTML = options;
+      return true;
+    }
+
+    async function loadApps(){
+      const data = await adminFetch('/api/admin/apps');
+      const items = data.items || [];
+      document.getElementById('inviteApp').innerHTML = items.map(item => `<option value="${esc(item.slug)}">${esc(item.name)} (${esc(item.slug)})</option>`).join('');
+      document.getElementById('appsTable').innerHTML = `
+        <thead><tr><th>Slug</th><th>Name</th><th>Enabled</th><th>Callback</th></tr></thead>
+        <tbody>${items.map(item => `<tr><td>${esc(item.slug)}</td><td>${esc(item.name)}</td><td>${item.enabled ? 'yes' : 'no'}</td><td class="mono">${esc(item.callback_url || '-')}</td></tr>`).join('')}</tbody>`;
+    }
+
+    async function loadApplications(){
+      const data = await adminFetch('/api/admin/applications');
+      const items = data.items || [];
+      document.getElementById('applicationsTable').innerHTML = `
+        <thead>
+          <tr>
+            <th>ID</th><th>App</th><th>Email</th><th>Status</th><th>账号</th><th>已开通</th><th>提交时间</th><th>审核结果</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(item => {
+            const statusClass = item.status === 'approved' ? 'status-approved' : item.status === 'rejected' ? 'status-rejected' : 'status-pending';
+            const review = item.status === 'pending'
+              ? '-'
+              : `${esc(item.review_role || '-')} / ${esc(item.review_target || '-')}<br><span class="muted">${esc(item.review_note || '') || '-'}</span>`;
+            const action = item.status === 'pending'
+              ? `<button class="alt" onclick="approveApplication(${item.id})">通过</button> <button class="alt" onclick="rejectApplication(${item.id})">拒绝</button>`
+              : `<span class="muted">${esc(item.reviewed_at || '-')}</span>`;
+            return `<tr>
+              <td>${item.id}</td>
+              <td>${esc(item.app_slug)}</td>
+              <td>${esc(item.email)}</td>
+              <td><span class="pill ${statusClass}">${esc(item.status)}</span></td>
+              <td>${item.has_account ? 'yes' : 'no'}</td>
+              <td>${item.has_access ? 'yes' : 'no'}</td>
+              <td class="nowrap">${esc(item.submitted_at || '-')}</td>
+              <td>${review}</td>
+              <td>${action}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>`;
+    }
+
+    async function loadInvites(){
+      const data = await adminFetch('/api/admin/invites');
+      const items = data.items || [];
+      document.getElementById('invitesTable').innerHTML = `
+        <thead><tr><th>App</th><th>Email</th><th>Role</th><th>Target</th><th>Expires</th><th>Action</th></tr></thead>
+        <tbody>${items.map(item => `<tr><td>${esc(item.app_slug)}</td><td>${esc(item.email)}</td><td>${esc(item.role)}</td><td>${esc(item.target || '-')}</td><td class="nowrap">${esc(item.expires_at)}</td><td><button class="alt" onclick="resendInvite('${item.invite_token}')">重发</button> <button class="alt" onclick="deleteInvite('${item.invite_token}')">删除</button></td></tr>`).join('')}</tbody>`;
+    }
+
+    async function loadUsers(){
+      const data = await adminFetch('/api/admin/users');
+      const items = data.items || [];
+      document.getElementById('usersTable').innerHTML = `
+        <thead><tr><th>Email</th><th>App</th><th>Role</th><th>Target</th><th>Enabled</th><th>Metadata</th></tr></thead>
+        <tbody>${items.map(item => `<tr><td>${esc(item.email)}</td><td>${esc(item.app_slug)}</td><td>${esc(item.role)}</td><td>${esc(item.default_target || '-')}</td><td>${item.enabled ? 'yes' : 'no'}</td><td><code class="mono">${esc(JSON.stringify(item.metadata || {}))}</code></td></tr>`).join('')}</tbody>`;
+    }
+
+    async function refreshAll(){
+      try {
+        if (!await ensureAdmin()) return;
+        await loadApps();
+        await loadApplications();
+        await loadInvites();
+        await loadUsers();
+      } catch (err) {
+        show(err.message || '加载失败', true);
+      }
+    }
+
+    document.getElementById('createAppBtn').onclick = async () => {
+      try {
+        await adminFetch('/api/admin/apps', {
+          method:'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            slug: document.getElementById('appSlug').value.trim(),
+            name: document.getElementById('appName').value.trim(),
+            callback_url: document.getElementById('callbackUrl').value.trim(),
+          })
+        });
+        show('应用已创建');
+        refreshAll();
+      } catch (err) { show(err.message || '创建失败', true); }
+    };
+
+    document.getElementById('createInviteBtn').onclick = async () => {
+      try {
+        await adminFetch('/api/admin/invites', {
+          method:'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            app_slug: document.getElementById('inviteApp').value,
+            email: document.getElementById('inviteEmail').value.trim(),
+            role: document.getElementById('inviteRole').value.trim(),
+            target: document.getElementById('inviteTarget').value.trim(),
+            metadata: JSON.parse(document.getElementById('inviteMetadata').value || '{}'),
+            note: document.getElementById('inviteNote').value.trim(),
+            send_email: true
+          })
+        });
+        show('邀请已创建');
+        refreshAll();
+      } catch (err) { show(err.message || '邀请失败', true); }
+    };
+
+    document.getElementById('issueTokenBtn').onclick = async () => {
+      try {
+        const {res, data} = await fetch('/api/auth/access-token', {
+          method:'POST',
+          headers: {'Authorization':`Bearer ${sessionToken()}`,'Content-Type':'application/json'},
+          body: JSON.stringify({app_slug: document.getElementById('tokenApp').value})
+        }).then(async res => ({res, data: await res.json().catch(()=>({}))}));
+        if (!res.ok) throw new Error(data.detail || '生成失败');
+        document.getElementById('issuedToken').value = data.token;
+        show('应用 access token 已生成');
+      } catch (err) { show(err.message || '生成失败', true); }
+    };
+
+    window.approveApplication = async (id) => {
+      try {
+        await adminFetch('/api/admin/applications/approve', {
+          method:'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            application_id: id,
+            role: 'member',
+            target: '',
+            metadata: {},
+            note: '',
+          })
+        });
+        show('申请已通过，邮件已按配置发送');
+        refreshAll();
+      } catch (err) { show(err.message || '审批失败', true); }
+    };
+
+    window.rejectApplication = async (id) => {
+      try {
+        const note = prompt('拒绝说明（会发到邮箱）', '') ?? '';
+        await adminFetch('/api/admin/applications/reject', {
+          method:'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ application_id: id, note: note.trim() })
+        });
+        show('申请已拒绝');
+        refreshAll();
+      } catch (err) { show(err.message || '拒绝失败', true); }
+    };
+
+    document.getElementById('refreshBtn').onclick = refreshAll;
+    document.getElementById('logoutBtn').onclick = () => {
+      localStorage.removeItem(sessionStorageKey);
+      location.href = '/login?next=%2Fadmin';
+    };
+    window.resendInvite = async (token) => {
+      try { await adminFetch(`/api/admin/invites/resend?token=${encodeURIComponent(token)}`, {method:'POST'}); show('邀请邮件已发送'); }
+      catch (err) { show(err.message || '发送失败', true); }
+    };
+    window.deleteInvite = async (token) => {
+      try { await adminFetch(`/api/admin/invites?token=${encodeURIComponent(token)}`, {method:'DELETE'}); show('邀请已删除'); refreshAll(); }
+      catch (err) { show(err.message || '删除失败', true); }
+    };
+    refreshAll();
+  </script>
+</body>
+</html>

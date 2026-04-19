@@ -1,0 +1,14 @@
+[project]
+name = "invite-center"
+version = "0.1.0"
+description = "Standalone invite/register/auth center for multiple apps."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.119.0",
+    "granian>=2.7.2",
+    "pydantic>=2.12.3",
+    "python-dotenv>=1.1.1",
+]
+
+[tool.ruff]
+line-length = 100

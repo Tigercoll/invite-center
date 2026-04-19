@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - 退出登录</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="title">正在退出登录</div>
+      <div class="sub">请稍候，正在清理统一认证会话并返回登录页。</div>
+      <div id="flash" class="flash" style="display:block">处理中...</div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const flash = document.getElementById('flash');
+      const params = new URLSearchParams(location.search);
+      const returnTo = (params.get('return_to') || '/login?logged_out=1').trim();
+      try {
+        localStorage.removeItem('invite_center_session');
+      } catch {}
+      flash.textContent = '已退出，正在跳转...';
+      setTimeout(() => {
+        location.href = returnTo || '/login?logged_out=1';
+      }, 120);
+    })();
+  </script>
+</body>
+</html>

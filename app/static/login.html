@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - 登录</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="title">登录</div>
+      <div class="sub">独立用户中心。登录后可为不同应用签发访问令牌。</div>
+      <div id="flash" class="flash"></div>
+      <div class="grid">
+        <div class="row">
+          <label>邮箱</label>
+          <input id="email" type="email" placeholder="you@example.com" />
+        </div>
+        <div class="row">
+          <label>密码</label>
+          <input id="password" type="password" placeholder="至少 8 位" />
+        </div>
+        <button id="loginBtn">登录</button>
+      </div>
+      <div class="sub" style="margin-top:14px">
+        <a class="link" id="applyLink" href="/apply">申请开通</a> ·
+        <a class="link" id="forgotLink" href="/forgot-password">忘记密码</a> ·
+        <a class="link" id="adminLink" href="/admin">管理员</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    const flash = document.getElementById('flash');
+    const params = new URLSearchParams(location.search);
+    const nextParam = (params.get('next') || '').trim();
+    const appSlug = (params.get('app_slug') || '').trim();
+    const returnTo = (params.get('return_to') || '').trim();
+    const forceLogin = (params.get('force_login') || '').trim() === '1';
+    const adminLink = document.getElementById('adminLink');
+    const show = (text, error = false) => {
+      flash.textContent = text;
+      flash.className = `flash${error ? ' error' : ''}`;
+      flash.style.display = 'block';
+    };
+    let resolvedReturnTo = returnTo;
+    async function ensureReturnTo() {
+      if (resolvedReturnTo || !appSlug) return resolvedReturnTo;
+      try {
+        const res = await fetch(`/api/auth/app?slug=${encodeURIComponent(appSlug)}`);
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.app?.callback_url) {
+          resolvedReturnTo = String(data.app.callback_url || '').trim();
+        }
+      } catch (_) {}
+      return resolvedReturnTo;
+    }
+    const nextAfterAuth = () => {
+      if (nextParam && nextParam.startsWith('/')) return nextParam;
+      const target = resolvedReturnTo || returnTo;
+      if (appSlug && target) {
+        const next = new URL('/launch', location.origin);
+        next.searchParams.set('app_slug', appSlug);
+        next.searchParams.set('return_to', target);
+        return `${next.pathname}${next.search}${next.hash}`;
+      }
+      return '/admin';
+    };
+    const withContext = (path) => {
+      const next = new URL(path, location.origin);
+      if (appSlug) next.searchParams.set('app_slug', appSlug);
+      if (resolvedReturnTo || returnTo) next.searchParams.set('return_to', resolvedReturnTo || returnTo);
+      return `${next.pathname}${next.search}${next.hash}`;
+    };
+    async function syncContextLinks() {
+      await ensureReturnTo();
+      document.getElementById('applyLink').href = withContext('/apply');
+      document.getElementById('forgotLink').href = withContext('/forgot-password');
+      if (appSlug && (resolvedReturnTo || returnTo)) {
+        adminLink.href = withContext('/launch');
+        adminLink.textContent = '进入管理页面';
+      } else {
+        adminLink.href = '/admin';
+        adminLink.textContent = '管理员';
+      }
+    }
+    if (forceLogin) {
+      localStorage.removeItem('invite_center_session');
+      params.delete('force_login');
+      const clean = `${location.pathname}${params.toString() ? `?${params.toString()}` : ''}${location.hash}`;
+      history.replaceState(null, '', clean);
+    }
+    async function me(token){
+      const res = await fetch('/api/auth/me', {headers:{Authorization:`Bearer ${token}`}});
+      return res.ok ? res.json() : null;
+    }
+    (async () => {
+      await syncContextLinks();
+      if (forceLogin) return;
+      const saved = localStorage.getItem('invite_center_session') || '';
+      if (!saved) return;
+      const data = await me(saved);
+      if (data?.status === 'ok') location.href = nextAfterAuth();
+    })();
+    document.getElementById('loginBtn').onclick = async () => {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || '登录失败');
+        localStorage.setItem('invite_center_session', data.token);
+        location.href = nextAfterAuth();
+      } catch (err) {
+        show(err.message || '登录失败', true);
+      }
+    };
+  </script>
+</body>
+</html>

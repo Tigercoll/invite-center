@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invite Center - 注册</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="title">审核通过后注册</div>
+      <div class="sub">该页面仅用于审核通过邮件中的注册链接。注册链接会自动绑定应用和邮箱。</div>
+      <div id="flash" class="flash"></div>
+      <div class="grid">
+        <div class="row">
+          <label>应用</label>
+          <input id="app" disabled />
+        </div>
+        <div class="row">
+          <label>邮箱</label>
+          <input id="email" type="email" />
+        </div>
+        <div class="row">
+          <label>密码</label>
+          <input id="password" type="password" placeholder="至少 8 位" />
+        </div>
+        <button id="registerBtn">注册并登录</button>
+      </div>
+      <div class="sub" style="margin-top:14px">
+        <a class="link" id="loginLink" href="/login">返回登录</a>
+      </div>
+    </section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('token') || '';
+    const params = new URLSearchParams(location.search);
+    const appSlug = (params.get('app_slug') || '').trim();
+    const returnTo = (params.get('return_to') || '').trim();
+    const flash = document.getElementById('flash');
+    const show = (text, error = false) => {
+      flash.textContent = text;
+      flash.className = `flash${error ? ' error' : ''}`;
+      flash.style.display = 'block';
+    };
+    const nextAfterAuth = () => {
+      if (appSlug && returnTo) {
+        const next = new URL('/launch', location.origin);
+        next.searchParams.set('app_slug', appSlug);
+        next.searchParams.set('return_to', returnTo);
+        return `${next.pathname}${next.search}${next.hash}`;
+      }
+      return '/admin';
+    };
+    const loginLink = new URL('/login', location.origin);
+    if (appSlug) loginLink.searchParams.set('app_slug', appSlug);
+    if (returnTo) loginLink.searchParams.set('return_to', returnTo);
+    document.getElementById('loginLink').href = `${loginLink.pathname}${loginLink.search}${loginLink.hash}`;
+    async function loadInvite(){
+      const res = await fetch(`/api/auth/invite?token=${encodeURIComponent(token)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '邀请无效');
+      document.getElementById('app').value = `${data.invite.app_name} (${data.invite.app_slug})`;
+      document.getElementById('email').value = data.invite.email;
+    }
+    document.getElementById('registerBtn').onclick = async () => {
+      try {
+        const res = await fetch('/api/auth/register', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            invite_token: token,
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value,
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || '注册失败');
+        localStorage.setItem('invite_center_session', data.token);
+        location.href = nextAfterAuth();
+      } catch (err) {
+        show(err.message || '注册失败', true);
+      }
+    };
+    loadInvite().catch(err => show(err.message || '邀请无效', true));
+  </script>
+</body>
+</html>
