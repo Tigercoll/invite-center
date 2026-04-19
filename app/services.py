@@ -190,6 +190,21 @@ class AuthService:
         item["review_metadata"] = json.loads(item.pop("review_metadata_json") or "{}")
         return item
 
+    def _user_access_query(self) -> str:
+        return """
+            SELECT u.email, u.enabled, u.created_at, a.slug AS app_slug, a.name AS app_name,
+                   a.callback_url, au.role, au.default_target, au.metadata_json
+            FROM app_users au
+            JOIN users u ON u.id = au.user_id
+            JOIN apps a ON a.id = au.app_id
+        """
+
+    def _row_to_user_access(self, row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["enabled"] = bool(item.get("enabled"))
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        return item
+
     def list_applications(self, status: str | None = None, app_slug: str | None = None) -> list[dict[str, Any]]:
         query = self._application_detail_query() + " WHERE 1=1"
         params: list[Any] = []
@@ -374,21 +389,36 @@ class AuthService:
         await send_mail(to_mail=application["email"], subject=f"{app_name} 申请已通过", content=html, is_html=True)
 
     async def send_application_access_granted_email(self, application: dict[str, Any]) -> None:
-        app_name = application.get("app_name") or application.get("app_slug") or "App"
-        link = self._build_login_link(str(application.get("app_slug") or ""), str(application.get("callback_url") or ""))
-        note = str(application.get("review_note") or "").strip()
+        await self.send_access_granted_email(
+            email=str(application["email"]),
+            app_slug=str(application.get("app_slug") or ""),
+            app_name=str(application.get("app_name") or application.get("app_slug") or "App"),
+            callback_url=str(application.get("callback_url") or ""),
+            note=str(application.get("review_note") or ""),
+        )
+
+    async def send_access_granted_email(
+        self,
+        *,
+        email: str,
+        app_slug: str,
+        app_name: str,
+        callback_url: str = "",
+        note: str = "",
+    ) -> None:
+        link = self._build_login_link(app_slug, callback_url)
         note_html = f"<p>审核备注：{escape(note)}</p>" if note else ""
         html = (
             f"<div style='font-family:Arial,sans-serif;line-height:1.7'>"
             f"<h2>{escape(app_name)} 已开通</h2>"
-            f"<p>你的申请已通过，系统已直接为现有账号开通该应用访问权限。</p>"
-            f"<p>登录邮箱：<strong>{escape(application['email'])}</strong></p>"
+            f"<p>系统已为你的现有账号开通该应用访问权限。</p>"
+            f"<p>登录邮箱：<strong>{escape(email)}</strong></p>"
             f"{note_html}"
             f"<p><a href='{escape(link)}'>点击前往登录</a></p>"
             f"<p>如无法点击，请复制链接：{escape(link)}</p>"
             f"</div>"
         )
-        await send_mail(to_mail=application["email"], subject=f"{app_name} 已开通", content=html, is_html=True)
+        await send_mail(to_mail=email, subject=f"{app_name} 已开通", content=html, is_html=True)
 
     async def send_application_rejected_email(self, application: dict[str, Any]) -> None:
         app_name = application.get("app_name") or application.get("app_slug") or "App"
@@ -762,14 +792,7 @@ class AuthService:
         return self.authenticate(email=reset["email"], password=password)
 
     def list_users(self, app_slug: str | None = None) -> list[dict[str, Any]]:
-        query = """
-            SELECT u.email, u.enabled, u.created_at, a.slug AS app_slug, a.name AS app_name,
-                   au.role, au.default_target, au.metadata_json
-            FROM app_users au
-            JOIN users u ON u.id = au.user_id
-            JOIN apps a ON a.id = au.app_id
-            WHERE 1=1
-        """
+        query = self._user_access_query() + " WHERE 1=1"
         params: list[Any] = []
         if app_slug:
             query += " AND a.slug = ?"
@@ -777,12 +800,62 @@ class AuthService:
         query += " ORDER BY u.id DESC"
         with self.db.session() as conn:
             rows = conn.execute(query, params).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
-            result.append(item)
-        return result
+        return [self._row_to_user_access(row) for row in rows]
+
+    async def grant_user_access(
+        self,
+        *,
+        app_slug: str,
+        email: str,
+        role: str = "member",
+        target: str = "",
+        metadata: dict[str, Any] | None = None,
+        note: str = "",
+        enabled: bool = True,
+        send_email_now: bool = True,
+    ) -> dict[str, Any]:
+        email = normalize_email(email)
+        require("@" in email, "valid email is required")
+        next_role = str(role or "member").strip() or "member"
+        next_target = str(target or "").strip()
+        next_note = str(note or "").strip()
+        next_metadata_json = json.dumps(metadata or {}, separators=(",", ":"))
+        with self.db.session() as conn:
+            app = self._get_app(conn, app_slug)
+            user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            require(user is not None, "user not found")
+            conn.execute("UPDATE users SET enabled = ? WHERE id = ?", (bool_int(enabled), user["id"]))
+            conn.execute(
+                """
+                INSERT INTO app_users (user_id, app_id, role, default_target, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, app_id)
+                DO UPDATE SET role=excluded.role, default_target=excluded.default_target, metadata_json=excluded.metadata_json
+                """,
+                (
+                    user["id"],
+                    app["id"],
+                    next_role,
+                    next_target,
+                    next_metadata_json,
+                    iso_now(),
+                ),
+            )
+            row = conn.execute(
+                self._user_access_query() + " WHERE u.id = ? AND a.id = ?",
+                (user["id"], app["id"]),
+            ).fetchone()
+        require(row is not None, "failed to grant user access")
+        item = self._row_to_user_access(row)
+        if send_email_now and is_mail_enabled():
+            await self.send_access_granted_email(
+                email=item["email"],
+                app_slug=item["app_slug"],
+                app_name=item["app_name"],
+                callback_url=str(item.get("callback_url") or ""),
+                note=next_note,
+            )
+        return item
 
     def update_user_access(
         self,
@@ -814,19 +887,10 @@ class AuthService:
             if enabled is not None:
                 conn.execute("UPDATE users SET enabled = ? WHERE id = ?", (bool_int(enabled), user["id"]))
             row = conn.execute(
-                """
-                SELECT u.email, u.enabled, u.created_at, a.slug AS app_slug, a.name AS app_name,
-                       au.role, au.default_target, au.metadata_json
-                FROM app_users au
-                JOIN users u ON u.id = au.user_id
-                JOIN apps a ON a.id = au.app_id
-                WHERE au.id = ?
-                """,
+                self._user_access_query() + " WHERE au.id = ?",
                 (access["id"],),
             ).fetchone()
-        item = dict(row)
-        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
-        return item
+        return self._row_to_user_access(row)
 
     def remove_user_access(self, *, app_slug: str, email: str) -> None:
         email = normalize_email(email)

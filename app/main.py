@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,6 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 db = Database(settings.db_path)
 svc = AuthService(db)
+logger = logging.getLogger(__name__)
 
 
 def _bearer(authorization: str | None) -> str:
@@ -125,6 +127,17 @@ class UserAccessUpdateRequest(BaseModel):
     target: str | None = Field(default=None, max_length=120)
     enabled: bool | None = None
     metadata: dict[str, Any] | None = None
+
+
+class UserAccessGrantRequest(BaseModel):
+    app_slug: str = Field(..., min_length=2, max_length=64)
+    email: str = Field(..., min_length=3, max_length=320)
+    role: str = Field(default="member", max_length=50)
+    target: str = Field(default="", max_length=120)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    note: str = Field(default="", max_length=500)
+    enabled: bool = True
+    send_email: bool = True
 
 
 def page(name: str) -> FileResponse:
@@ -383,6 +396,17 @@ async def admin_users(app_slug: str | None = Query(default=None)):
     return {"status": "ok", "items": svc.list_users(app_slug)}
 
 
+@app.post("/api/admin/users/grant", dependencies=[Depends(require_admin)])
+async def admin_users_grant(payload: UserAccessGrantRequest):
+    try:
+        params = payload.model_dump()
+        params["send_email_now"] = params.pop("send_email", True)
+        item = await svc.grant_user_access(**params)
+        return {"status": "ok", "item": item, "mail_enabled": is_mail_enabled()}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.patch("/api/admin/users", dependencies=[Depends(require_admin)])
 async def admin_users_update(payload: UserAccessUpdateRequest):
     try:
@@ -398,5 +422,6 @@ async def admin_users_delete(app_slug: str = Query(...), email: str = Query(...)
 
 
 @app.exception_handler(Exception)
-async def unhandled(_, exc: Exception):
-    return JSONResponse({"error": str(exc)}, status_code=500)
+async def unhandled(request: Request, exc: Exception):
+    logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
+    return JSONResponse({"error": "internal server error"}, status_code=500)

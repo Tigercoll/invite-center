@@ -41,6 +41,17 @@
           <input id="inviteNote" placeholder="note" />
           <button id="createInviteBtn">创建邀请并发邮件</button>
         </div>
+        <div class="row">
+          <label>直接给已有用户开通应用</label>
+          <select id="grantApp"></select>
+          <input id="grantEmail" placeholder="existing-user@example.com" />
+          <input id="grantRole" placeholder="member" value="member" />
+          <input id="grantTarget" placeholder="chat / masonry / dashboard" />
+          <textarea id="grantMetadata" placeholder='{"webui":"dashboard"}'></textarea>
+          <input id="grantNote" placeholder="开通备注（可选，会出现在通知邮件里）" />
+          <button id="grantAccessBtn">直接开通并发通知</button>
+          <div class="muted">仅适用于已经存在账号的用户；不会重置密码。</div>
+        </div>
       </section>
       <section class="card">
         <div class="row">
@@ -140,7 +151,9 @@
     async function loadApps(){
       const data = await adminFetch('/api/admin/apps');
       const items = data.items || [];
-      document.getElementById('inviteApp').innerHTML = items.map(item => `<option value="${esc(item.slug)}">${esc(item.name)} (${esc(item.slug)})</option>`).join('');
+      const options = items.map(item => `<option value="${esc(item.slug)}">${esc(item.name)} (${esc(item.slug)})</option>`).join('');
+      document.getElementById('inviteApp').innerHTML = options;
+      document.getElementById('grantApp').innerHTML = options;
       document.getElementById('appsTable').innerHTML = `
         <thead><tr><th>Slug</th><th>Name</th><th>Enabled</th><th>Callback</th></tr></thead>
         <tbody>${items.map(item => `<tr><td>${esc(item.slug)}</td><td>${esc(item.name)}</td><td>${item.enabled ? 'yes' : 'no'}</td><td class="mono">${esc(item.callback_url || '-')}</td></tr>`).join('')}</tbody>`;
@@ -241,6 +254,27 @@
         show('邀请已创建');
         refreshAll();
       } catch (err) { show(err.message || '邀请失败', true); }
+    };
+
+    document.getElementById('grantAccessBtn').onclick = async () => {
+      try {
+        await adminFetch('/api/admin/users/grant', {
+          method:'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({
+            app_slug: document.getElementById('grantApp').value,
+            email: document.getElementById('grantEmail').value.trim(),
+            role: document.getElementById('grantRole').value.trim(),
+            target: document.getElementById('grantTarget').value.trim(),
+            metadata: JSON.parse(document.getElementById('grantMetadata').value || '{}'),
+            note: document.getElementById('grantNote').value.trim(),
+            send_email: true,
+            enabled: true
+          })
+        });
+        show('已直接开通访问权限');
+        refreshAll();
+      } catch (err) { show(err.message || '开通失败', true); }
     };
 
     document.getElementById('issueTokenBtn').onclick = async () => {

@@ -59,6 +59,13 @@ invite-center/
 3. 若用户还没有账号，系统发送注册链接
 4. 若用户已有账号，系统直接开通该应用访问权限
 
+### 2.5) 管理员直接给已有用户开通
+
+1. 管理员进入 `/admin`
+2. 在“直接给已有用户开通应用”表单中选择应用、填写邮箱
+3. 提交后系统直接为该已有账号写入应用权限
+4. 如已启用邮件能力，会给该用户发送开通通知
+
 ### 3) 应用对接认证中心
 
 1. 前端跳转到 Invite Center 登录
@@ -179,6 +186,10 @@ https://auth.example.com
 AUTH_CENTER_BASE_URL=https://auth.example.com
 ```
 
+完整示例见：
+
+- `docs/reverse-proxy-examples.md`
+
 ---
 
 ## 关键环境变量
@@ -251,6 +262,7 @@ AUTH_CENTER_BASE_URL=https://auth.example.com
 - `POST /api/admin/invites/resend`
 - `DELETE /api/admin/invites`
 - `GET /api/admin/users`
+- `POST /api/admin/users/grant`
 - `PATCH /api/admin/users`
 - `DELETE /api/admin/users`
 

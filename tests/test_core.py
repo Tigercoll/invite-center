@@ -173,6 +173,43 @@ class InviteCenterCoreTests(unittest.TestCase):
         pending_invite = self.service.get_invite(invite["invite_token"])
         self.assertEqual(pending_invite["email"], "exists@example.com")
 
+    def test_admin_can_grant_existing_user_access_directly(self) -> None:
+        self.service.create_app("base-app", "Base App")
+        self.service.create_app("ops-app", "Ops App")
+        invite = asyncio.run(
+            self.service.create_invite(
+                app_slug="base-app",
+                email="member@example.com",
+                send_email_now=False,
+            )
+        )
+        self.service.register(
+            invite_token=invite["invite_token"],
+            email="member@example.com",
+            password="password-123",
+        )
+
+        granted = asyncio.run(
+            self.service.grant_user_access(
+                app_slug="ops-app",
+                email="member@example.com",
+                role="operator",
+                target="dashboard",
+                metadata={"scope": "ops"},
+                note="manual grant",
+                send_email_now=False,
+            )
+        )
+        self.assertEqual(granted["app_slug"], "ops-app")
+        self.assertEqual(granted["role"], "operator")
+        self.assertEqual(granted["default_target"], "dashboard")
+        self.assertEqual(granted["metadata"]["scope"], "ops")
+
+        auth = self.service.authenticate(email="member@example.com", password="password-123")
+        apps = {item["slug"]: item for item in auth["user"]["apps"]}
+        self.assertIn("ops-app", apps)
+        self.assertEqual(apps["ops-app"]["role"], "operator")
+
     def test_reject_application(self) -> None:
         self.service.create_app("reject-demo", "Reject Demo")
         application = asyncio.run(self.service.submit_application(app_slug="reject-demo", email="reject@example.com"))
