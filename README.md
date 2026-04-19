@@ -193,6 +193,7 @@ AUTH_CENTER_BASE_URL=https://auth.example.com
 完整示例见：
 
 - `docs/reverse-proxy-examples.md`
+- `docs/pentest-checklist.md`
 
 ---
 

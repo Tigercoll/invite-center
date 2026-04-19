@@ -207,6 +207,45 @@ async def startup() -> None:
     svc.bootstrap()
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+
+    if request.url.path.startswith("/api/") or request.url.path in {
+        "/login",
+        "/logout",
+        "/apply",
+        "/register",
+        "/launch",
+        "/forgot-password",
+        "/reset-password",
+        "/admin",
+    }:
+        response.headers.setdefault("Cache-Control", "no-store")
+
+    content_type = str(response.headers.get("content-type", "")).lower()
+    if "text/html" in content_type:
+        csp = (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self'"
+        )
+        response.headers.setdefault("Content-Security-Policy", csp)
+    return response
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     return RedirectResponse("/login")

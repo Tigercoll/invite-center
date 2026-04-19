@@ -35,6 +35,7 @@ server {
 
     ssl_certificate     /etc/letsencrypt/live/auth.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/auth.example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     client_max_body_size 10m;
 
@@ -63,6 +64,9 @@ server {
 ```caddy
 auth.example.com {
     encode gzip zstd
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
 
     reverse_proxy 127.0.0.1:18010 {
         header_up Host {host}
@@ -96,3 +100,4 @@ ports:
 ```
 
 这样只能由本机 Nginx / Caddy 转发访问。
+6. 如果后端已经加了 CSP / 安全响应头，建议不要在反向代理重复设置冲突版本。

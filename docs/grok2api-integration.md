@@ -8,40 +8,47 @@
 
 ### 1. 用户先在 Invite Center 登录
 
-- 用户访问 `https://auth.example.com/login`
-- 登录成功后拿到 `session token`
+- 用户访问 `https://auth.example.com/login?app_slug=grok2api`
+- 登录成功后，Invite Center 会使用自身的 `HttpOnly` 会话 Cookie
 
-### 2. 前端向 Invite Center 申请 grok2api 专用 token
+### 2. Invite Center 自动跳转回 grok2api
 
-调用：
+Invite Center 的 `/launch` 页面会：
 
-```http
-POST /api/auth/access-token
-Authorization: Bearer <session_token>
-Content-Type: application/json
+1. 向 `POST /api/auth/access-token` 申请 `grok2api` 的 app token
+2. 读取该 app 的 `callback_url`
+3. 跳转回：
 
-{
-  "app_slug": "grok2api"
-}
+```text
+https://grok.example.com/sso/callback#access_token=<app_token>
 ```
 
-返回：
+注意：
 
-```json
-{
-  "status": "ok",
-  "token": "<app_token>",
-  "claims": {
-    "email": "user@example.com",
-    "slug": "grok2api",
-    "role": "member",
-    "default_target": "chat",
-    "metadata": {
-      "webui": "chat"
-    }
+- 现在 token 在 **URL hash fragment** 中
+- 不在 query 参数中
+- fragment 默认不会发给服务端，能减少日志泄露风险
+
+### 3. grok2api 前端读取 hash 中的 access token
+
+示例：
+
+```html
+<script>
+  const hash = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash);
+  const accessToken = hash.get('access_token') || '';
+  if (accessToken) {
+    sessionStorage.setItem('grok2api_access_token', accessToken);
+    history.replaceState(null, '', location.pathname + location.search);
   }
-}
+</script>
 ```
+
+建议：
+
+- 读取后立刻清理地址栏中的 hash
+- 只在 grok2api 自己的前端短暂保存
+- 后续请求通过 `Authorization: Bearer <app_token>` 发送到 grok2api 后端
 
 ### 3. grok2api 校验 app token
 
@@ -76,6 +83,8 @@ Invite Center 现在 app token 已包含：
 - `role`
 - `target`
 - `metadata`
+- `callback_url`
+- `ver`
 - `iat`
 - `exp`
 
@@ -124,8 +133,8 @@ AUTH_CENTER_MODE=remote_verify
 
 - “前往统一登录中心”
 
-登录完成后回跳时携带：
+登录完成后回跳时：
 
-- app token
-
-或先写入前端存储，再访问 grok2api。
+- 从 `hash fragment` 中读取 `access_token`
+- 清理地址栏
+- 再访问 grok2api 内部页面
