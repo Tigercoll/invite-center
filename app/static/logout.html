@@ -18,14 +18,14 @@
     (() => {
       const flash = document.getElementById('flash');
       const params = new URLSearchParams(location.search);
-      const returnTo = (params.get('return_to') || '/login?logged_out=1').trim();
-      try {
-        localStorage.removeItem('invite_center_session');
-      } catch {}
-      flash.textContent = '已退出，正在跳转...';
-      setTimeout(() => {
-        location.href = returnTo || '/login?logged_out=1';
-      }, 120);
+      const raw = (params.get('return_to') || '/login?logged_out=1').trim();
+      const safeReturnTo = raw.startsWith('/') ? raw : '/login?logged_out=1';
+      fetch('/api/auth/logout', {method:'POST'}).catch(() => undefined).finally(() => {
+        flash.textContent = '已退出，正在跳转...';
+        setTimeout(() => {
+          location.href = safeReturnTo;
+        }, 120);
+      });
     })();
   </script>
 </body>

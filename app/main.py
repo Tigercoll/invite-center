@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -19,6 +21,25 @@ STATIC_DIR = BASE_DIR / "static"
 db = Database(settings.db_path)
 svc = AuthService(db)
 logger = logging.getLogger(__name__)
+SESSION_COOKIE_NAME = "invite_center_session"
+
+
+class RateLimiter:
+    def __init__(self) -> None:
+        self._buckets: dict[str, deque[float]] = defaultdict(deque)
+
+    def hit(self, scope: str, key: str, *, limit: int, window_seconds: int) -> None:
+        bucket_key = f"{scope}:{key}"
+        bucket = self._buckets[bucket_key]
+        now = time.monotonic()
+        while bucket and now - bucket[0] > window_seconds:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            raise HTTPException(429, "too many requests, please try again later")
+        bucket.append(now)
+
+
+rate_limiter = RateLimiter()
 
 
 def _bearer(authorization: str | None) -> str:
@@ -28,9 +49,43 @@ def _bearer(authorization: str | None) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
-async def require_admin(authorization: str | None = Header(default=None)) -> None:
+def _client_ip(request: Request) -> str:
+    return str(request.client.host if request.client else "unknown")
+
+
+def _session_token(request: Request, authorization: str | None) -> str:
     token = _bearer(authorization)
-    if token == settings.admin_key:
+    if token:
+        return token
+    return str(request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=settings.session_ttl_hours * 3600,
+        httponly=True,
+        secure=settings.base_url.startswith("https://"),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+
+
+def _limit_request(scope: str, request: Request, identifier: str, *, limit: int, window_seconds: int) -> None:
+    ip = _client_ip(request)
+    ident = identifier.strip().lower() or "anonymous"
+    rate_limiter.hit(f"{scope}:ip", ip, limit=max(limit * 3, limit), window_seconds=window_seconds)
+    rate_limiter.hit(scope, f"{ip}:{ident}", limit=limit, window_seconds=window_seconds)
+
+
+async def require_admin(request: Request, authorization: str | None = Header(default=None)) -> None:
+    token = _session_token(request, authorization)
+    if settings.allow_admin_key and token == settings.admin_key:
         return
     if not token:
         raise HTTPException(401, "missing admin session")
@@ -42,8 +97,8 @@ async def require_admin(authorization: str | None = Header(default=None)) -> Non
         raise HTTPException(403, "admin access required")
 
 
-def current_session(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    token = _bearer(authorization)
+def current_session(request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    token = _session_token(request, authorization)
     if not token:
         raise HTTPException(401, "missing session token")
     try:
@@ -108,7 +163,6 @@ class LoginRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=320)
     app_slug: str = Field(default="", max_length=64)
-    return_to: str = Field(default="", max_length=1000)
 
 
 class ResetPasswordRequest(BaseModel):
@@ -144,7 +198,7 @@ def page(name: str) -> FileResponse:
     return FileResponse(STATIC_DIR / name)
 
 
-app = FastAPI(title="Invite Center", version="0.2.0")
+app = FastAPI(title="Invite Center", version="0.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -209,6 +263,7 @@ async def meta():
         "base_url": settings.base_url,
         "mail_enabled": is_mail_enabled(),
         "bootstrap_app_slug": settings.bootstrap_app_slug,
+        "allow_admin_key": settings.allow_admin_key,
     }
 
 
@@ -221,7 +276,14 @@ async def auth_app(slug: str = Query(..., min_length=2, max_length=64)):
 
 
 @app.post("/api/auth/applications")
-async def auth_submit_application(payload: ApplicationCreateRequest):
+async def auth_submit_application(request: Request, payload: ApplicationCreateRequest):
+    _limit_request(
+        "apply",
+        request,
+        f"{payload.app_slug}:{payload.email}",
+        limit=3,
+        window_seconds=15 * 60,
+    )
     try:
         return {"status": "ok", "item": await svc.submit_application(**payload.model_dump())}
     except ValueError as exc:
@@ -239,17 +301,37 @@ async def auth_invite(token: str = Query(...)):
 @app.post("/api/auth/register")
 async def auth_register(payload: RegisterRequest):
     try:
-        return {"status": "ok", **svc.register(**payload.model_dump())}
+        result = {"status": "ok", **svc.register(**payload.model_dump())}
+        response = JSONResponse(result)
+        _set_session_cookie(response, result["token"])
+        return response
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/auth/login")
-async def auth_login(payload: LoginRequest):
+async def auth_login(request: Request, payload: LoginRequest):
+    _limit_request(
+        "login",
+        request,
+        payload.email,
+        limit=5,
+        window_seconds=10 * 60,
+    )
     try:
-        return {"status": "ok", **svc.authenticate(**payload.model_dump())}
+        result = {"status": "ok", **svc.authenticate(**payload.model_dump())}
+        response = JSONResponse(result)
+        _set_session_cookie(response, result["token"])
+        return response
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    response = JSONResponse({"status": "ok"})
+    _clear_session_cookie(response)
+    return response
 
 
 @app.get("/api/auth/me")
@@ -258,9 +340,16 @@ async def auth_me(session: dict[str, Any] = Depends(current_session)):
 
 
 @app.post("/api/auth/access-token")
-async def auth_access_token(payload: AccessTokenRequest, authorization: str | None = Header(default=None)):
+async def auth_access_token(
+    request: Request,
+    payload: AccessTokenRequest,
+    authorization: str | None = Header(default=None),
+):
+    token = _session_token(request, authorization)
+    if not token:
+        raise HTTPException(401, "missing session token")
     try:
-        result = svc.issue_app_token(_bearer(authorization), payload.app_slug)
+        result = svc.issue_app_token(token, payload.app_slug)
         return {"status": "ok", **result}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -276,11 +365,17 @@ async def auth_verify(authorization: str | None = Header(default=None), app_slug
 
 
 @app.post("/api/auth/password/forgot")
-async def auth_password_forgot(payload: ForgotPasswordRequest):
+async def auth_password_forgot(request: Request, payload: ForgotPasswordRequest):
+    _limit_request(
+        "forgot-password",
+        request,
+        f"{payload.app_slug}:{payload.email}",
+        limit=3,
+        window_seconds=15 * 60,
+    )
     await svc.request_password_reset(
         payload.email,
         app_slug=payload.app_slug,
-        return_to=payload.return_to,
     )
     return {"status": "ok", "message": "If the account exists, reset instructions have been sent."}
 
@@ -297,7 +392,10 @@ async def auth_password_reset_verify(token: str = Query(...)):
 @app.post("/api/auth/password/reset")
 async def auth_password_reset(payload: ResetPasswordRequest):
     try:
-        return {"status": "ok", **svc.reset_password(payload.token, payload.password)}
+        result = {"status": "ok", **svc.reset_password(payload.token, payload.password)}
+        response = JSONResponse(result)
+        _set_session_cookie(response, result["token"])
+        return response
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

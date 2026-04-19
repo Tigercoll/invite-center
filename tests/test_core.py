@@ -70,8 +70,15 @@ class InviteCenterCoreTests(unittest.TestCase):
         token = resets[0]["reset_token"]
         verified = self.service.verify_reset_token(token)
         self.assertEqual(verified["email"], "reset@example.com")
+        old_auth = self.service.authenticate(email="reset@example.com", password="old-password")
+        old_session = old_auth["token"]
+        old_app_token = self.service.issue_app_token(old_session, "demo2")["token"]
         reset = self.service.reset_password(token, "new-password")
         self.assertTrue(reset["token"])
+        with self.assertRaises(ValueError):
+            self.service.verify_session(old_session)
+        with self.assertRaises(ValueError):
+            self.service.verify_app_token(old_app_token, "demo2")
 
     def test_submit_application_merges_same_pending(self) -> None:
         self.service.create_app("apply-demo", "Apply Demo")
@@ -209,6 +216,35 @@ class InviteCenterCoreTests(unittest.TestCase):
         apps = {item["slug"]: item for item in auth["user"]["apps"]}
         self.assertIn("ops-app", apps)
         self.assertEqual(apps["ops-app"]["role"], "operator")
+
+    def test_remove_user_access_invalidates_existing_app_token(self) -> None:
+        self.service.create_app("base-app", "Base App")
+        self.service.create_app("ops-app", "Ops App")
+        invite = asyncio.run(
+            self.service.create_invite(
+                app_slug="base-app",
+                email="member2@example.com",
+                send_email_now=False,
+            )
+        )
+        self.service.register(
+            invite_token=invite["invite_token"],
+            email="member2@example.com",
+            password="password-123",
+        )
+        asyncio.run(
+            self.service.grant_user_access(
+                app_slug="ops-app",
+                email="member2@example.com",
+                role="operator",
+                send_email_now=False,
+            )
+        )
+        auth = self.service.authenticate(email="member2@example.com", password="password-123")
+        token = self.service.issue_app_token(auth["token"], "ops-app")["token"]
+        self.service.remove_user_access(app_slug="ops-app", email="member2@example.com")
+        with self.assertRaises(ValueError):
+            self.service.verify_app_token(token, "ops-app")
 
     def test_reject_application(self) -> None:
         self.service.create_app("reject-demo", "Reject Demo")

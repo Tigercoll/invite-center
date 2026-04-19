@@ -79,9 +79,12 @@ invite-center/
 - `.env` 与 `data/` 默认不会提交到 Git
 - 密码使用 `PBKDF2-HMAC-SHA256`
 - Session Token 与 App Token 使用 HMAC 签名
+- 浏览器登录会话改为 `HttpOnly` Cookie 保存，不再放在 `localStorage`
+- 应用跳转时，`access_token` 放在 URL `hash fragment` 中，而不是 query 参数
 - **已存在账号不能再通过邀请注册链接重设密码**
   - 若邮箱已注册，应直接登录
   - 若需要为已有账号开通新应用，推荐走“申请审核”流程
+- 登录 / 忘记密码 / 申请开通接口已增加基础限流
 
 ---
 
@@ -125,6 +128,7 @@ cp .env.example .env
 AUTH_CENTER_SESSION_SECRET=请替换为强随机字符串
 AUTH_CENTER_APP_TOKEN_SECRET=请替换为强随机字符串
 AUTH_CENTER_ADMIN_KEY=请替换为强随机字符串
+AUTH_CENTER_ALLOW_ADMIN_KEY=0
 AUTH_CENTER_BASE_URL=https://your-auth-domain.example.com
 AUTH_CENTER_PUBLIC_PORT=18010
 
@@ -204,6 +208,7 @@ AUTH_CENTER_BASE_URL=https://auth.example.com
 | `AUTH_CENTER_SESSION_SECRET` | Session Token 签名密钥 |
 | `AUTH_CENTER_APP_TOKEN_SECRET` | App Token 签名密钥 |
 | `AUTH_CENTER_ADMIN_KEY` | 管理员静态密钥 |
+| `AUTH_CENTER_ALLOW_ADMIN_KEY` | 是否允许使用静态管理员密钥，生产建议为 `0` |
 | `AUTH_CENTER_ADMIN_EMAILS` | 管理员邮箱列表，逗号分隔 |
 | `AUTH_CENTER_BOOTSTRAP_ADMIN_EMAIL` | 启动时自动创建/更新的管理员邮箱 |
 | `AUTH_CENTER_BOOTSTRAP_ADMIN_PASSWORD` | 启动时自动设置的管理员密码 |
@@ -285,7 +290,8 @@ python3 -m unittest tests.test_core
 
 1. 跳转到 Invite Center 登录
 2. 使用 `POST /api/auth/access-token` 为 `grok2api` 申请 app token
-3. `grok2api` 本地共享密钥验签，或调用 `GET /api/auth/verify`
+3. `grok2api` 从回跳 URL 的 `hash fragment` 中读取 `access_token`
+4. `grok2api` 本地共享密钥验签，或调用 `GET /api/auth/verify`
 
 详细说明见：
 

@@ -47,6 +47,9 @@ def require(condition: bool, message: str) -> None:
 class AuthService:
     db: Database
 
+    def _bump_token_version(self, conn, user_id: int) -> None:
+        conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = ?", (int(user_id),))
+
     def bootstrap(self) -> None:
         self.db.initialize()
         with self.db.session() as conn:
@@ -62,13 +65,8 @@ class AuthService:
                 user = conn.execute("SELECT * FROM users WHERE email = ?", (admin_email,)).fetchone()
                 if user is None:
                     conn.execute(
-                        "INSERT INTO users (email, password_hash, enabled, created_at) VALUES (?, ?, 1, ?)",
+                        "INSERT INTO users (email, password_hash, token_version, enabled, created_at) VALUES (?, ?, 1, 1, ?)",
                         (admin_email, hash_password(admin_password), iso_now()),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE users SET password_hash = ?, enabled = 1 WHERE id = ?",
-                        (hash_password(admin_password), user["id"]),
                     )
 
     def is_admin_email(self, email: str) -> bool:
@@ -154,11 +152,8 @@ class AuthService:
     def _build_register_link(self, invite: dict[str, Any]) -> str:
         link = f"{settings.base_url}/register?token={quote(invite['invite_token'])}"
         app_slug = str(invite.get("app_slug") or "").strip()
-        callback_url = str(invite.get("callback_url") or "").strip()
         if app_slug:
             link += f"&app_slug={quote(app_slug)}"
-        if callback_url:
-            link += f"&return_to={quote(callback_url, safe='')}"
         return link
 
     def _build_login_link(self, app_slug: str, callback_url: str = "") -> str:
@@ -166,8 +161,6 @@ class AuthService:
         query: list[str] = []
         if app_slug:
             query.append(f"app_slug={quote(app_slug, safe='')}")
-        if callback_url:
-            query.append(f"return_to={quote(callback_url, safe='')}")
         if query:
             link += "?" + "&".join(query)
         return link
@@ -516,6 +509,7 @@ class AuthService:
                         iso_now(),
                     ),
                 )
+                self._bump_token_version(conn, user["id"])
                 approved_invite_token = ""
 
             conn.execute(
@@ -621,7 +615,7 @@ class AuthService:
             user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
             if user is None:
                 conn.execute(
-                    "INSERT INTO users (email, password_hash, enabled, created_at) VALUES (?, ?, 1, ?)",
+                    "INSERT INTO users (email, password_hash, token_version, enabled, created_at) VALUES (?, ?, 1, 1, ?)",
                     (email, hash_password(password), iso_now()),
                 )
                 user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
@@ -668,6 +662,7 @@ class AuthService:
                 "purpose": "session",
                 "sub": user["id"],
                 "email": user["email"],
+                "ver": int(user["token_version"]),
                 "iat": now_ts(),
                 "exp": now_ts() + settings.session_ttl_hours * 3600,
             },
@@ -689,6 +684,7 @@ class AuthService:
         with self.db.session() as conn:
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             require(user is not None and bool(user["enabled"]), "user not found")
+            require(int(payload.get("ver", 0)) == int(user["token_version"]), "session expired")
             rows = conn.execute(
                 """
                 SELECT a.slug, a.name, a.callback_url, au.role, au.default_target, au.metadata_json
@@ -704,7 +700,7 @@ class AuthService:
             item = dict(row)
             item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
             apps.append(item)
-        return {"user_id": user_id, "email": user["email"], "apps": apps}
+        return {"user_id": user_id, "email": user["email"], "apps": apps, "token_version": int(user["token_version"])}
 
     def issue_app_token(self, session_token: str, app_slug: str) -> dict[str, Any]:
         session = self.verify_session(session_token)
@@ -720,6 +716,8 @@ class AuthService:
                 "role": app["role"],
                 "target": app["default_target"],
                 "metadata": app["metadata"],
+                "callback_url": app["callback_url"],
+                "ver": session.get("token_version"),
                 "iat": now_ts(),
                 "exp": now_ts() + settings.app_token_ttl_minutes * 60,
             },
@@ -732,16 +730,36 @@ class AuthService:
         require(payload is not None, "invalid app token")
         require(payload.get("purpose") == "app", "invalid app token")
         require(int(payload.get("exp", 0)) > now_ts(), "app token expired")
+        token_app_slug = normalize_slug(payload.get("app"))
         if app_slug:
-            require(payload.get("app") == normalize_slug(app_slug), "token app mismatch")
+            require(token_app_slug == normalize_slug(app_slug), "token app mismatch")
+        with self.db.session() as conn:
+            user = conn.execute("SELECT * FROM users WHERE id = ?", (int(payload["sub"]),)).fetchone()
+            require(user is not None and bool(user["enabled"]), "user not found")
+            require(int(payload.get("ver", 0)) == int(user["token_version"]), "app token expired")
+            access = conn.execute(
+                """
+                SELECT a.slug
+                FROM app_users au
+                JOIN apps a ON a.id = au.app_id
+                WHERE au.user_id = ? AND a.slug = ? AND a.enabled = 1
+                """,
+                (int(user["id"]), token_app_slug),
+            ).fetchone()
+            require(access is not None, "user has no access to this app")
         return payload
 
-    async def request_password_reset(self, email: str, *, app_slug: str = "", return_to: str = "") -> None:
+    async def request_password_reset(self, email: str, *, app_slug: str = "") -> None:
         email = normalize_email(email)
+        app_slug = normalize_slug(app_slug)
+        callback_url = ""
         with self.db.session() as conn:
             user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
             if user is None or not bool(user["enabled"]):
                 return
+            if app_slug:
+                app = self._get_app(conn, app_slug)
+                callback_url = str(app["callback_url"] or "").strip()
             reset_token = secrets.token_urlsafe(24)
             expires_at = (utc_now() + timedelta(minutes=settings.reset_ttl_minutes)).replace(microsecond=0)
             conn.execute(
@@ -751,17 +769,16 @@ class AuthService:
         if not is_mail_enabled():
             return
         link = f"{settings.base_url}/reset-password?token={quote(reset_token)}"
-        app_slug = normalize_slug(app_slug)
         if app_slug:
             link += f"&app_slug={quote(app_slug, safe='')}"
-        if return_to:
-            link += f"&return_to={quote(str(return_to).strip(), safe='')}"
         html = (
             f"<div style='font-family:Arial,sans-serif;line-height:1.7'>"
             f"<h2>密码重置</h2>"
             f"<p>账号：<strong>{escape(email)}</strong></p>"
+            f"{f'<p>应用：<strong>{escape(app_slug)}</strong></p>' if app_slug else ''}"
             f"<p><a href='{escape(link)}'>点击重置密码</a></p>"
             f"<p>有效期 {settings.reset_ttl_minutes} 分钟。</p>"
+            f"{f'<p>重置后可继续进入应用：{escape(callback_url)}</p>' if callback_url else ''}"
             f"</div>"
         )
         await send_mail(to_mail=email, subject="密码重置", content=html, is_html=True)
@@ -789,6 +806,7 @@ class AuthService:
         with self.db.session() as conn:
             conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), reset["user_id"]))
             conn.execute("UPDATE password_resets SET used_at = ? WHERE id = ?", (iso_now(), reset["id"]))
+            self._bump_token_version(conn, reset["user_id"])
         return self.authenticate(email=reset["email"], password=password)
 
     def list_users(self, app_slug: str | None = None) -> list[dict[str, Any]]:
@@ -841,6 +859,7 @@ class AuthService:
                     iso_now(),
                 ),
             )
+            self._bump_token_version(conn, user["id"])
             row = conn.execute(
                 self._user_access_query() + " WHERE u.id = ? AND a.id = ?",
                 (user["id"], app["id"]),
@@ -886,6 +905,7 @@ class AuthService:
             )
             if enabled is not None:
                 conn.execute("UPDATE users SET enabled = ? WHERE id = ?", (bool_int(enabled), user["id"]))
+            self._bump_token_version(conn, user["id"])
             row = conn.execute(
                 self._user_access_query() + " WHERE au.id = ?",
                 (access["id"],),
@@ -903,3 +923,4 @@ class AuthService:
                 "DELETE FROM app_users WHERE user_id = ? AND app_id = ?",
                 (user["id"], app["id"]),
             )
+            self._bump_token_version(conn, user["id"])

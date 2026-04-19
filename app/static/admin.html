@@ -95,14 +95,12 @@
   </main>
   <script>
     const flash = document.getElementById('flash');
-    const sessionStorageKey = 'invite_center_session';
 
     const show = (text, error = false) => {
       flash.textContent = text;
       flash.className = `flash${error ? ' error' : ''}`;
       flash.style.display = 'block';
     };
-    const sessionToken = () => localStorage.getItem(sessionStorageKey) || '';
     const jsonHeaders = (extra={}) => ({'Content-Type':'application/json', ...extra});
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
@@ -111,14 +109,14 @@
     }
 
     async function authGet(path){
-      const res = await fetch(path, {headers:{Authorization:`Bearer ${sessionToken()}`}});
+      const res = await fetch(path);
       return {res, data: await res.json().catch(()=>({}))};
     }
 
     async function adminFetch(path, options={}){
       const res = await fetch(path, {
         ...options,
-        headers:{Authorization:`Bearer ${sessionToken()}`, ...(options.headers||{})}
+        headers:{...(options.headers||{})}
       });
       const data = await res.json().catch(()=>({}));
       if (res.status === 401 || res.status === 403) {
@@ -129,14 +127,12 @@
     }
 
     async function ensureAdmin(){
-      const token = sessionToken();
-      if (!token) {
+      const {res, data} = await authGet('/api/admin/me');
+      if (res.status === 401) {
         goLogin();
         return false;
       }
-      const {res, data} = await authGet('/api/admin/me');
       if (!res.ok || !data?.is_admin) {
-        localStorage.removeItem(sessionStorageKey);
         show(data?.detail || '当前账号不是管理员，请先登录管理员账号', true);
         setTimeout(goLogin, 800);
         return false;
@@ -281,7 +277,7 @@
       try {
         const {res, data} = await fetch('/api/auth/access-token', {
           method:'POST',
-          headers: {'Authorization':`Bearer ${sessionToken()}`,'Content-Type':'application/json'},
+          headers: {'Content-Type':'application/json'},
           body: JSON.stringify({app_slug: document.getElementById('tokenApp').value})
         }).then(async res => ({res, data: await res.json().catch(()=>({}))}));
         if (!res.ok) throw new Error(data.detail || '生成失败');
@@ -322,8 +318,8 @@
     };
 
     document.getElementById('refreshBtn').onclick = refreshAll;
-    document.getElementById('logoutBtn').onclick = () => {
-      localStorage.removeItem(sessionStorageKey);
+    document.getElementById('logoutBtn').onclick = async () => {
+      try { await fetch('/api/auth/logout', {method:'POST'}); } catch (_) {}
       location.href = '/login?next=%2Fadmin';
     };
     window.resendInvite = async (token) => {

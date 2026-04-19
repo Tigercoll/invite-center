@@ -28,6 +28,13 @@ def _csv_env(name: str) -> tuple[str, ...]:
     return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -40,6 +47,7 @@ class Settings:
     admin_emails: tuple[str, ...]
     bootstrap_admin_email: str
     bootstrap_admin_password: str
+    allow_admin_key: bool
     session_ttl_hours: int
     app_token_ttl_minutes: int
     reset_ttl_minutes: int
@@ -68,6 +76,7 @@ def get_settings() -> Settings:
         admin_emails=_csv_env("AUTH_CENTER_ADMIN_EMAILS"),
         bootstrap_admin_email=os.getenv("AUTH_CENTER_BOOTSTRAP_ADMIN_EMAIL", "").strip().lower(),
         bootstrap_admin_password=os.getenv("AUTH_CENTER_BOOTSTRAP_ADMIN_PASSWORD", "").strip(),
+        allow_admin_key=_bool_env("AUTH_CENTER_ALLOW_ADMIN_KEY", False),
         session_ttl_hours=_int_env("AUTH_CENTER_SESSION_TTL_HOURS", 24 * 30),
         app_token_ttl_minutes=_int_env("AUTH_CENTER_APP_TOKEN_TTL_MINUTES", 60),
         reset_ttl_minutes=_int_env("AUTH_CENTER_RESET_TTL_MINUTES", 30),

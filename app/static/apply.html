@@ -31,7 +31,6 @@
   <script>
     const params = new URLSearchParams(location.search);
     const appSlug = (params.get('app_slug') || '').trim();
-    const returnTo = (params.get('return_to') || '').trim();
     const flash = document.getElementById('flash');
 
     function show(text, error = false) {
@@ -43,7 +42,6 @@
     function withContext(path) {
       const url = new URL(path, location.origin);
       if (appSlug) url.searchParams.set('app_slug', appSlug);
-      if (returnTo) url.searchParams.set('return_to', returnTo);
       return `${url.pathname}${url.search}${url.hash}`;
     }
 

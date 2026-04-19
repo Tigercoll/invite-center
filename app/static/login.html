@@ -35,48 +35,35 @@
     const params = new URLSearchParams(location.search);
     const nextParam = (params.get('next') || '').trim();
     const appSlug = (params.get('app_slug') || '').trim();
-    const returnTo = (params.get('return_to') || '').trim();
     const forceLogin = (params.get('force_login') || '').trim() === '1';
     const adminLink = document.getElementById('adminLink');
+
     const show = (text, error = false) => {
       flash.textContent = text;
       flash.className = `flash${error ? ' error' : ''}`;
       flash.style.display = 'block';
     };
-    let resolvedReturnTo = returnTo;
-    async function ensureReturnTo() {
-      if (resolvedReturnTo || !appSlug) return resolvedReturnTo;
-      try {
-        const res = await fetch(`/api/auth/app?slug=${encodeURIComponent(appSlug)}`);
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data?.app?.callback_url) {
-          resolvedReturnTo = String(data.app.callback_url || '').trim();
-        }
-      } catch (_) {}
-      return resolvedReturnTo;
-    }
+
     const nextAfterAuth = () => {
       if (nextParam && nextParam.startsWith('/')) return nextParam;
-      const target = resolvedReturnTo || returnTo;
-      if (appSlug && target) {
+      if (appSlug) {
         const next = new URL('/launch', location.origin);
         next.searchParams.set('app_slug', appSlug);
-        next.searchParams.set('return_to', target);
         return `${next.pathname}${next.search}${next.hash}`;
       }
       return '/admin';
     };
+
     const withContext = (path) => {
       const next = new URL(path, location.origin);
       if (appSlug) next.searchParams.set('app_slug', appSlug);
-      if (resolvedReturnTo || returnTo) next.searchParams.set('return_to', resolvedReturnTo || returnTo);
       return `${next.pathname}${next.search}${next.hash}`;
     };
-    async function syncContextLinks() {
-      await ensureReturnTo();
+
+    function syncContextLinks() {
       document.getElementById('applyLink').href = withContext('/apply');
       document.getElementById('forgotLink').href = withContext('/forgot-password');
-      if (appSlug && (resolvedReturnTo || returnTo)) {
+      if (appSlug) {
         adminLink.href = withContext('/launch');
         adminLink.textContent = '进入管理页面';
       } else {
@@ -84,24 +71,31 @@
         adminLink.textContent = '管理员';
       }
     }
-    if (forceLogin) {
-      localStorage.removeItem('invite_center_session');
-      params.delete('force_login');
-      const clean = `${location.pathname}${params.toString() ? `?${params.toString()}` : ''}${location.hash}`;
-      history.replaceState(null, '', clean);
-    }
-    async function me(token){
-      const res = await fetch('/api/auth/me', {headers:{Authorization:`Bearer ${token}`}});
+
+    async function me() {
+      const res = await fetch('/api/auth/me');
       return res.ok ? res.json() : null;
     }
+
+    async function logoutSilently() {
+      try {
+        await fetch('/api/auth/logout', {method:'POST'});
+      } catch (_) {}
+    }
+
     (async () => {
-      await syncContextLinks();
-      if (forceLogin) return;
-      const saved = localStorage.getItem('invite_center_session') || '';
-      if (!saved) return;
-      const data = await me(saved);
+      syncContextLinks();
+      if (forceLogin) {
+        await logoutSilently();
+        params.delete('force_login');
+        const clean = `${location.pathname}${params.toString() ? `?${params.toString()}` : ''}${location.hash}`;
+        history.replaceState(null, '', clean);
+        return;
+      }
+      const data = await me();
       if (data?.status === 'ok') location.href = nextAfterAuth();
     })();
+
     document.getElementById('loginBtn').onclick = async () => {
       try {
         const res = await fetch('/api/auth/login', {
@@ -112,9 +106,8 @@
             password: document.getElementById('password').value
           })
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || data.error || '登录失败');
-        localStorage.setItem('invite_center_session', data.token);
         location.href = nextAfterAuth();
       } catch (err) {
         show(err.message || '登录失败', true);

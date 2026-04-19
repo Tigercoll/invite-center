@@ -18,8 +18,6 @@
     const flash = document.getElementById('flash');
     const params = new URLSearchParams(location.search);
     const appSlug = (params.get('app_slug') || '').trim();
-    const returnTo = (params.get('return_to') || '').trim();
-    const sessionKey = 'invite_center_session';
 
     function show(text, error = false) {
       flash.textContent = text;
@@ -30,24 +28,20 @@
     function preserveQuery(path) {
       const next = new URL(path, location.origin);
       if (appSlug) next.searchParams.set('app_slug', appSlug);
-      if (returnTo) next.searchParams.set('return_to', returnTo);
       return `${next.pathname}${next.search}${next.hash}`;
     }
 
     function resolveReturnUrl(accessToken, claims) {
-      const target = returnTo || claims?.callback_url || '';
+      const target = String(claims?.callback_url || '').trim();
       if (!target) return '/admin';
       const url = new URL(target, location.origin);
-      url.searchParams.set('access_token', accessToken);
+      const hash = new URLSearchParams(url.hash.startsWith('#') ? url.hash.slice(1) : url.hash);
+      hash.set('access_token', accessToken);
+      url.hash = hash.toString();
       return url.toString();
     }
 
     async function start() {
-      const sessionToken = localStorage.getItem(sessionKey) || '';
-      if (!sessionToken) {
-        location.href = preserveQuery('/login');
-        return;
-      }
       if (!appSlug) {
         location.href = '/admin';
         return;
@@ -55,17 +49,17 @@
       try {
         const res = await fetch('/api/auth/access-token', {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${sessionToken}`,
-            'Content-Type': 'application/json',
-          },
+          headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ app_slug: appSlug }),
         });
         const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          location.href = preserveQuery('/login');
+          return;
+        }
         if (!res.ok) throw new Error(data.detail || data.error || '签发 access token 失败');
         location.href = resolveReturnUrl(data.token || '', data.claims || {});
       } catch (err) {
-        localStorage.removeItem(sessionKey);
         show(err.message || '跳转失败，请重新登录', true);
         setTimeout(() => {
           location.href = preserveQuery('/login');
