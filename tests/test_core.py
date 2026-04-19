@@ -134,6 +134,45 @@ class InviteCenterCoreTests(unittest.TestCase):
         self.assertEqual(apps["new-app"]["default_target"], "masonry")
         self.assertEqual(apps["new-app"]["metadata"]["webui"], "masonry")
 
+    def test_existing_user_cannot_use_invite_to_reset_password(self) -> None:
+        self.service.create_app("base-app", "Base App")
+        self.service.create_app("invite-app", "Invite App")
+        base_invite = asyncio.run(
+            self.service.create_invite(
+                app_slug="base-app",
+                email="exists@example.com",
+                send_email_now=False,
+            )
+        )
+        self.service.register(
+            invite_token=base_invite["invite_token"],
+            email="exists@example.com",
+            password="original-password",
+        )
+
+        invite = asyncio.run(
+            self.service.create_invite(
+                app_slug="invite-app",
+                email="exists@example.com",
+                send_email_now=False,
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "account already exists"):
+            self.service.register(
+                invite_token=invite["invite_token"],
+                email="exists@example.com",
+                password="new-password",
+            )
+
+        auth = self.service.authenticate(email="exists@example.com", password="original-password")
+        self.assertTrue(auth["token"])
+        with self.assertRaises(ValueError):
+            self.service.authenticate(email="exists@example.com", password="new-password")
+
+        pending_invite = self.service.get_invite(invite["invite_token"])
+        self.assertEqual(pending_invite["email"], "exists@example.com")
+
     def test_reject_application(self) -> None:
         self.service.create_app("reject-demo", "Reject Demo")
         application = asyncio.run(self.service.submit_application(app_slug="reject-demo", email="reject@example.com"))

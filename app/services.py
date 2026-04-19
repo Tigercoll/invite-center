@@ -596,9 +596,7 @@ class AuthService:
                 )
                 user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
             else:
-                require(bool(user["enabled"]), "user is disabled")
-                conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user["id"]))
-                user = conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                raise ValueError("account already exists, please log in instead of registering again")
             conn.execute(
                 """
                 INSERT INTO app_users (user_id, app_id, role, default_target, metadata_json, created_at)
