@@ -193,6 +193,9 @@ AUTH_CENTER_BASE_URL=https://auth.example.com
 完整示例见：
 
 - `docs/app-integration-guide.md`
+- `docs/backend-integration-examples.md`
+- `docs/callback-template.html`
+- `docs/deployment-onepager.md`
 - `docs/reverse-proxy-examples.md`
 - `docs/pentest-checklist.md`
 
